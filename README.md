@@ -2,6 +2,8 @@
 
 一个基于 Golang 的远程 PowerShell 命令执行服务。
 
+TL;DR: ssh -ArgumentList "-N -R 9999:localhost:8833 username@server"
+
 ## 功能
 
 - 创建独立的 PowerShell 会话
