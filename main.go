@@ -77,7 +77,7 @@ func (sm *SessionManager) CreateSession() (*Session, error) {
 	sm.sessions[sessionID] = session
 	sm.mu.Unlock()
 
-	log.Printf("Created session: %s", sessionID)
+	log.Printf("✓ Created new session | SessionID: %s", sessionID)
 	return session, nil
 }
 
@@ -96,6 +96,7 @@ func (sm *SessionManager) EndSession(sessionID string) error {
 
 	session, exists := sm.sessions[sessionID]
 	if !exists {
+		log.Printf("✗ Failed to end session: session not found | SessionID: %s", sessionID)
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
@@ -109,7 +110,7 @@ func (sm *SessionManager) EndSession(sessionID string) error {
 	}
 
 	delete(sm.sessions, sessionID)
-	log.Printf("Ended session: %s", sessionID)
+	log.Printf("✓ Closed session | SessionID: %s", sessionID)
 	return nil
 }
 
@@ -119,8 +120,11 @@ func (s *Session) RunCommand(command string) (string, error) {
 	defer s.mu.Unlock()
 
 	if !s.Running {
+		log.Printf("✗ Command execution failed: session not running | SessionID: %s", s.ID)
 		return "", fmt.Errorf("session is not running")
 	}
+
+	log.Printf("→ Executing command | SessionID: %s | Command: %s", s.ID, command)
 
 	// 使用唯一标记来分隔输出
 	marker := uuid.New().String()
@@ -129,6 +133,7 @@ func (s *Session) RunCommand(command string) (string, error) {
 
 	// 写入命令
 	if _, err := s.Stdin.Write([]byte(fullCommand)); err != nil {
+		log.Printf("✗ Failed to write command | SessionID: %s | Error: %v", s.ID, err)
 		return "", fmt.Errorf("failed to write command: %v", err)
 	}
 
@@ -140,6 +145,7 @@ func (s *Session) RunCommand(command string) (string, error) {
 	for {
 		n, err := s.Stdout.Read(buffer)
 		if err != nil && err != io.EOF {
+			log.Printf("✗ Failed to read output | SessionID: %s | Error: %v", s.ID, err)
 			return "", fmt.Errorf("failed to read output: %v", err)
 		}
 
@@ -160,6 +166,8 @@ func (s *Session) RunCommand(command string) (string, error) {
 						if len(result) > 0 && result[len(result)-1] == '\r' {
 							result = result[:len(result)-1]
 						}
+						log.Printf("✓ Command executed successfully | SessionID: %s | Output length: %d bytes", s.ID, len(result))
+						log.Printf("← Output | SessionID: %s | Content:\n%s", s.ID, result)
 						return result, nil
 					}
 				}
@@ -168,11 +176,15 @@ func (s *Session) RunCommand(command string) (string, error) {
 
 		// 避免无限等待
 		if len(output) > 1024*1024 { // 1MB 限制
+			log.Printf("⚠ Output size limit exceeded | SessionID: %s | Size: %d bytes", s.ID, len(output))
 			break
 		}
 	}
 
-	return string(output), nil
+	result := string(output)
+	log.Printf("✓ Command completed (no marker found) | SessionID: %s | Output length: %d bytes", s.ID, len(result))
+	log.Printf("← Output | SessionID: %s | Content:\n%s", s.ID, result)
+	return result, nil
 }
 
 var sessionManager *SessionManager
@@ -184,12 +196,15 @@ func handleStartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("→ Request: Start new session")
 	session, err := sessionManager.CreateSession()
 	if err != nil {
+		log.Printf("✗ Failed to start session | Error: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to create session: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("✓ Session started successfully | SessionID: %s", session.ID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"session_id": session.ID,
@@ -209,27 +224,34 @@ func handleRunCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("✗ Invalid request body | Error: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	if req.SessionID == "" || req.Command == "" {
+		log.Printf("✗ Missing required parameters | SessionID: %s | Command: %s", req.SessionID, req.Command)
 		http.Error(w, "session_id and command are required", http.StatusBadRequest)
 		return
 	}
 
+	log.Printf("→ Request: Run command | SessionID: %s | Command: %s", req.SessionID, req.Command)
+
 	session, exists := sessionManager.GetSession(req.SessionID)
 	if !exists {
+		log.Printf("✗ Session not found | SessionID: %s", req.SessionID)
 		http.Error(w, "Session not found", http.StatusNotFound)
 		return
 	}
 
 	output, err := session.RunCommand(req.Command)
 	if err != nil {
+		log.Printf("✗ Command execution failed | SessionID: %s | Error: %v", req.SessionID, err)
 		http.Error(w, fmt.Sprintf("Failed to execute command: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("✓ Response sent | SessionID: %s | Output length: %d bytes", req.SessionID, len(output))
 	// 返回纯文本,保留原始格式
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(output))
@@ -247,20 +269,26 @@ func handleEndSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("✗ Invalid request body | Error: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	if req.SessionID == "" {
+		log.Printf("✗ Missing session_id parameter")
 		http.Error(w, "session_id is required", http.StatusBadRequest)
 		return
 	}
 
+	log.Printf("→ Request: End session | SessionID: %s", req.SessionID)
+
 	if err := sessionManager.EndSession(req.SessionID); err != nil {
+		log.Printf("✗ Failed to end session | SessionID: %s | Error: %v", req.SessionID, err)
 		http.Error(w, fmt.Sprintf("Failed to end session: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("✓ Session ended successfully | SessionID: %s", req.SessionID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Session ended successfully",
